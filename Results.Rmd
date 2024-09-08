@@ -1,0 +1,810 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#load all relevant packages
+```{r}
+library(dplyr)
+library(tidyverse)
+library(zoo)
+library(pracma)
+library(lubridate)
+library(tibble)
+library(ggplot2)
+library(targets)
+library(tseries)
+library(urca)
+library(forecast)
+```
+
+#Load the cleaned datasets, under all timescales
+```{r}
+dfFull <- tar_read(combined_15min_data)
+df_15min <- tar_read(combined_15min_data) %>% select(date, height, station_id)
+df_hourly <- tar_read(combined_hourly_data)
+df_daily <- tar_read(combined_daily_data)
+df_weekly <- tar_read(combined_weekly_data)
+```
+
+#Counting missing values/outliers after data cleaning
+```{r}
+NACountfunc <- function(df) {
+  NACountDF <- data.frame(stations = riverStations,
+                          MissingNA = numeric(33),
+                          OutlierNA = numeric(33),
+                          percentage = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfSingle <- df %>% filter(station_id == riverStations[i])
+    NACountDF$MissingNA[i] <- sum(is.na(dfSingle$value))
+    NACountDF$OutlierNA[i] <- sum(is.na(dfSingle$newValue)) - NACountDF$MissingNA[i]
+    NACountDF$percentage[i] <- round(100 * sum(is.na(dfSingle$newValue))/dim(dfSingle)[1], 2)
+  }
+  
+  return(NACountDF)
+}
+
+NAcounts <- NACountfunc(dfFull)
+NAcounts
+```
+
+#Summary statistics (Full table in appendices)
+```{r}
+GetSummaryStats <- function(dfAll) {
+  summaryStatsDF <- data.frame(stations = riverStations,
+                               Min = numeric(33),
+                               firstQu = numeric(33),
+                               Median = numeric(33),
+                               Mean = numeric(33),
+                               thirdQu = numeric(33),
+                               Max = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfStation <- dfAll %>% filter(station_id == riverStations[i])
+    
+    summaryStatsDF$Min[i] <- as.numeric(summary(dfStation$height)[1])
+    summaryStatsDF$firstQu[i] <- as.numeric(summary(dfStation$height)[2])
+    summaryStatsDF$Median[i] <- as.numeric(summary(dfStation$height)[3])
+    summaryStatsDF$Mean[i] <- as.numeric(summary(dfStation$height)[4])
+    summaryStatsDF$thirdQu[i] <- as.numeric(summary(dfStation$height)[5])
+    summaryStatsDF$Max[i] <- as.numeric(summary(dfStation$height)[6])
+  }
+  
+  return(summaryStatsDF)
+}
+
+GetSummaryStats(dfFull)
+```
+
+
+
+Corresponding plots for outliers/missing values (numbering conformed with the dissertation project)
+#Figure 3
+```{r}
+stationPlotfunction <- function(id, start, end) {
+  df <- dfFull %>% filter(station_id == as.character(id)) %>%
+                   filter(date >= start & date <= end)
+  
+  ggplot(df, aes(x = date)) +
+  geom_line(aes(y = value), size = 0.7, color = "blue") +
+  labs(x = "Date", y = "River height (m)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+}
+
+stationPlotfunction(7038, as.POSIXct("2019-07-22 00:00:00", tz = "UTC"),
+                          as.POSIXct("2019-07-24 00:00:00", tz = "UTC"))
+stationPlotfunction(7057, as.POSIXct("2024-02-24 00:00:00", tz = "UTC"),
+                          as.POSIXct("2024-02-26 00:00:00", tz = "UTC"))
+```
+
+#Figure 4
+```{r}
+stationPlotfunction(7048, as.POSIXct("2019-08-08 00:00:00", tz = "UTC"),
+                          as.POSIXct("2019-08-10 00:00:00", tz = "UTC"))
+
+stationPlotfunction(7055, as.POSIXct("2021-07-01 00:00:00", tz = "UTC"),
+                          as.POSIXct("2021-07-09 00:00:00", tz = "UTC"))
+```
+
+#Figure 5
+```{r}
+OutlierPlotfunction <- function(id, start, end) {
+  df <- dfFull %>% filter(station_id == as.character(id)) %>%
+                   filter(date >= start & date <= end)
+  
+  ggplot(df, aes(x = date)) +
+  geom_line(aes(y = value), size = 0.7, color = "red") +
+  geom_line(aes(y = newValue), size = 0.7, color = "blue") +
+  labs(x = "Date", y = "River height (m)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+}
+
+OutlierPlotfunction(7038, as.POSIXct("2019-07-22 00:00:00", tz = "UTC"),
+                          as.POSIXct("2019-07-24 00:00:00", tz = "UTC"))
+
+OutlierPlotfunction(7057, as.POSIXct("2024-02-24 00:00:00", tz = "UTC"),
+                          as.POSIXct("2024-02-26 00:00:00", tz = "UTC"))
+```
+
+
+
+Chapter 4: Results
+#River stations
+```{r}
+riverThames <- c("7027", "7034", "7035", "7036", "7037", "7038", "7046", "7048", "7049", "7055", "7056", "7057", "7072", "7405", "7073", "7083", "7085", "7086")
+riverOck <- c("7402", "7078", "7077")
+riverCherwell <- c("7059", "1414", "7063", "7064", "7066", "7071")
+streamsBrooks <- c("7039", "7001", "7075", "7074", "7076", "7003")
+riverStations <- c(riverThames, riverOck, riverCherwell, streamsBrooks)
+```
+
+4.1: Mechanistic models
+#Plots for illustrative examples: Figure 7 (Stations 7034 and 7035)
+```{r}
+df7035 <- df_15min %>% filter(station_id == "7034")
+df7036 <- df_15min %>% filter(station_id == "7035")
+df_combined <- data.frame(
+  Index = rep(df7035$date[25:73], 2),
+  Height = c(df7035$height[25:73], df7036$height[25:73]),  
+  Stations = rep(c("7034", "7035"), each = 49)  
+)
+
+ggplot(df_combined, aes(x = Index, y = Height, color = Stations)) +
+  geom_line(size = 0.8) + 
+  geom_vline(xintercept = df7035$date[35], linetype = "dashed", color = "black", size = 0.5) +
+  geom_vline(xintercept = df7035$date[45], linetype = "dashed", color = "black", size = 0.5) +
+  geom_vline(xintercept = df7035$date[55], linetype = "dashed", color = "green", size = 0.5) +
+  geom_vline(xintercept = df7035$date[70], linetype = "dashed", color = "green", size = 0.5) +
+  labs(x = "time",
+       y = "River height (m)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.major= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+```
+
+#Plot function for adjusted Rsquare & AIC against tau: like Figures 8, 9, 11, 12, 22, 23
+```{r}
+plotFunctionAcrossTaus <- function(tausVec, infoList) {
+  plotData <- data.frame(tausVec, infoList$AIC, infoList$Rsquare)
+  
+  pic1 <- ggplot(plotData, aes(x = tausVec, y = infoList$AIC)) +
+            geom_line(color = "blue") +
+            geom_point(color = "blue") +
+            labs(title = expression("AIC vs." ~ bold(tau)), x = expression(bold(tau)), y = "AIC") +
+            theme_minimal() + 
+            theme(axis.text.x = element_text(size = 10, face = "bold")) +
+            theme(axis.text.y = element_text(size = 10, face = "bold")) +
+            theme(
+                  axis.title.x = element_text(size = 13, face = "bold"), 
+                  axis.title.y = element_text(size = 13, face = "bold"))
+
+  pic2 <- ggplot(plotData, aes(x = tausVec, y = infoList$Rsquare)) +
+            geom_line(color = "skyblue") +
+            geom_point(color = "skyblue") +
+            labs(title = expression("Adjusted" ~ R^2 ~ "vs." ~ bold(tau)), x = expression(bold(tau)), y = expression("Adjusted" ~ R^2)) +
+            theme_minimal()+
+            theme(axis.text.x = element_text(size = 10, face = "bold")) +
+            theme(axis.text.y = element_text(size = 10, face = "bold")) +
+            theme(
+                  axis.title.x = element_text(size = 13, face = "bold"), 
+                  axis.title.y = element_text(size = 13, face = "bold"))
+  
+  print(pic1)
+  print(pic2)
+}
+```
+
+
+Fitting simple linear regression models
+#Retrieve training data (with specific tau)
+```{r}
+retrieveTrainingDf <- function(id, Fulldf, tau) {
+  upstreamPosition <- NA
+  stationPosition <- which(riverStations == as.character(id))
+  
+  if (stationPosition == 1) {
+    df <- Fulldf %>% filter(station_id == id) %>%
+                   mutate(heightU = 0) %>% 
+                   select(date, heightU, height, station_id)
+  } else if (adjMatrix1[stationPosition-1, stationPosition] == 1) {
+    upstreamPosition <- stationPosition - 1
+    dfUpstream <- Fulldf %>% filter(station_id == riverStations[upstreamPosition])
+    df <- Fulldf %>% filter(station_id == id) %>%
+                     mutate(heightU = dfUpstream$height) %>% 
+                     select(date, heightU, height, station_id)
+  } else {
+    df <- Fulldf %>% filter(station_id == id) %>%
+                   mutate(heightU = 0) %>% 
+                   select(date, heightU, height, station_id)
+  }
+  
+  if (tau < nrow(df)) {
+    df <- df %>% mutate(heightU = c(rep(NA, tau), heightU[1:(nrow(df) - tau)]))
+    df <- df %>% filter(!is.na(heightU))
+  } else {
+    warning("tau too large!!")
+  }
+  return(df)
+}
+```
+
+#Obtain corresponding adjusted Rsquares of models with optimal tau
+```{r}
+LMtauList15min <- list(1, seq(1,5), seq(8,12), seq(3,7), seq(5,10),
+                       seq(20,30), seq(23,27), seq(1,5), seq(1,5), seq(1,5),
+                       seq(245,250), seq(1,5), seq(5,10), seq(2,6), seq(6,10),
+                       seq(1,5), seq(15,20), seq(1,5), 1, seq(65,70), 
+                       seq(1,5), 1, seq(25,30), seq(130,135), seq(32,37),
+                       seq(1,5), seq(16,21), 1,1,1,1,1,1)
+
+LMtauListHourly <- rep(list(seq(1, 5)), 33)
+LMtauListHourly[[11]] <- seq(60,65)
+LMtauListHourly[[20]] <- seq(15,20)
+LMtauListHourly[[23]] <- seq(5,10)
+LMtauListHourly[[24]] <- seq(30,35)
+LMtauListHourly[[25]] <- seq(8,13)
+LMtauListHourly[[27]] <- seq(3,8)
+  
+LMtauListDaily <- rep(list(seq(1, 5)), 33)
+LMtauListWeekly <- rep(list(seq(1, 5)), 33)
+
+retrieveOptRsquare <- function(df, tausList) {
+  Rsquares <- vector("numeric", 33)
+  
+  for (i in seq_along(riverStations)) {
+    for (j in seq_along(tausList[[i]])) {
+      trainingDf <- retrieveTrainingDf(riverStations[i], df, tausList[[i]][j])
+      model <- lm(height ~ 1 + heightU, data = trainingDf)
+      if (summary(model)$adj.r.squared > Rsquares[i]) {
+        Rsquares[i] <- summary(model)$adj.r.squared
+      }
+    }
+  }
+  
+  return(Rsquares[Rsquares != 0])
+}
+
+Rsquare15min <- retrieveOptRsquare(df_15min, LMtauList15min)
+RsquareHourly <- retrieveOptRsquare(df_hourly, LMtauListHourly)
+RsquareDaily <- retrieveOptRsquare(df_daily, LMtauListDaily)
+RsquareWeekly <- retrieveOptRsquare(df_weekly, LMtauListWeekly)
+```
+
+#Return optimal tau, and corresponding time in the unit of minutes
+```{r}
+retrieveOptTaus <- function(df, tausList) {
+  Taus <- vector("integer", 33)
+  
+  for (i in seq_along(riverStations)) {
+    Rsquares <- vector("numeric", length(tausList[[i]]))
+    for (j in seq_along(tausList[[i]])) {
+      trainingDf <- retrieveTrainingDf(riverStations[i], df, tausList[[i]][j])
+      model <- lm(height ~ 1 + heightU, data = trainingDf)
+      Rsquares[j] <- summary(model)$adj.r.squared
+    }
+    Taus[i] <- tausList[[i]][which.max(Rsquares)]
+  }
+  
+  return(Taus)
+}
+
+#removing those without an adjacent upstream station
+removedIndices <- c(1,19,22,28,29,30,31,32,33)
+optTau15min <- retrieveOptTaus(df_15min, LMtauList15min)
+optTauHourly <- retrieveOptTaus(df_hourly, LMtauListHourly)
+optTauDaily <- retrieveOptTaus(df_daily, LMtauListDaily)
+optTauWeekly <- retrieveOptTaus(df_weekly, LMtauListWeekly)
+
+#convert optimal tau values into corresponding time, in the unit of minutes
+TauDF <- data.frame(stations = riverStations[-removedIndices],
+                    mins = 15*optTau15min[-removedIndices],
+                    Hourly = 60*optTauHourly[-removedIndices],
+                    Daily = 1440 *optTauDaily[-removedIndices],
+                    Weekly = 10080*optTauWeekly[-removedIndices])
+```
+
+#Point range plots under all timescales: Figure 10
+```{r}
+ggplot(pointRangeDF, aes(x = timeScale, y = median)) +
+  theme_minimal() +
+  geom_pointrange(aes(ymin = lower, ymax = upper), size = 0.5, color = "skyblue") +
+  xlab("time scale") +
+  ylab(bquote(bold("Adjusted" ~ R^2))) +
+  geom_text(aes(label = sprintf("%.4f", median)), vjust = -1.5, color = "black") +
+  geom_text(aes(y = lower, label = sprintf("%.4f", lower)), vjust = 1.5, color = "red") +
+  geom_text(aes(y = upper, label = sprintf("%.4f", upper)), vjust = -0.5, color = "blue") +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 14, face = "bold"), 
+        axis.title.y = element_text(size = 14, face = "bold"))
+```
+
+
+
+
+4.2 Autoregressive models
+#Retrieve training datasets for AR(1) with upstream term (for a specific tau)
+```{r}
+retrieveTrainingDf2 <- function(id, Fulldf, tau) {
+  upstreamPosition <- NA
+  stationPosition <- which(riverStations == as.character(id))
+  
+  if (stationPosition == 1) {
+    df <- Fulldf %>% filter(station_id == id) %>%
+                     mutate(heightU = 0) %>% 
+                     select(date, heightU, height, station_id)
+  } else if (stationPosition != 1 & adjMatrix1[stationPosition-1, stationPosition] == 1) {
+    upstreamPosition <- stationPosition - 1
+    dfUpstream <- Fulldf %>% filter(station_id == riverStations[upstreamPosition])
+    df <- Fulldf %>% filter(station_id == id) %>%
+                     mutate(heightU = dfUpstream$height) %>% 
+                     select(date, heightU, height, station_id)
+  } else {
+    df <- Fulldf %>% filter(station_id == id) %>%
+                   mutate(heightU = 0) %>% 
+                   select(date, heightU, height, station_id)
+  }
+  
+  if (tau < nrow(df)) {
+    df <- df %>% mutate(heightU = c(rep(NA, tau), heightU[1:(nrow(df) - tau)]))
+  } else {
+    warning("tau too large!!")
+  }
+
+  df <- df %>% mutate(heightAR = lag(height, 1)) %>%
+               filter(!is.na(heightU)) %>%
+               filter(!is.na(heightAR)) %>%
+               select(date, height, heightAR, heightU, station_id)
+  
+  return(df)
+}
+```
+
+#Retrieve the adjusted Rsquare for AR(1) and AR(1) with upstream term (optimal tau)
+```{r}
+#candidates of optimal tau (only small tau values)
+ARtauList15min <- rep(list(seq(1, 5)), 33)
+ARtauListHourly <- rep(list(seq(1, 5)), 33)
+ARtauListDaily <- rep(list(seq(1, 5)), 33)
+ARtauListWeekly <- rep(list(seq(1, 5)), 33)
+
+retrieveOptRsquareAR <- function(df, tausList) {
+  Rsquares <- vector("numeric", 33)
+  RsquaresARonly <- vector("numeric", 33)
+  
+  for (i in seq_along(riverStations)) {
+    dfARonly <- df %>% filter(station_id == riverStations[i]) %>%
+                       mutate(heightAR = lag(height, 1)) %>%
+                       select(date, heightAR, height)
+    model1 <- lm(height ~ 1 + heightAR, data = dfARonly)
+    RsquaresARonly[i] <- summary(model1)$adj.r.squared
+    
+    for (j in seq_along(tausList[[i]])) {
+      trainingDf <- retrieveTrainingDf2(riverStations[i], df, tausList[[i]][j])
+      model2 <- lm(height ~ 1 + heightAR + heightU, data = trainingDf)
+      
+      if (summary(model2)$adj.r.squared > Rsquares[i]) {
+        Rsquares[i] <- summary(model2)$adj.r.squared
+      }
+    }
+  }
+  
+  return(list(RsquaresARonly, Rsquares))
+}
+
+Rsquare15minAR <- lapply(retrieveOptRsquareAR(df_15min, ARtauList15min), function(vec) vec[-removedIndices])
+RsquareHourlyAR <- lapply(retrieveOptRsquareAR(df_hourly, ARtauListHourly), function(vec) vec[-removedIndices])
+RsquareDailyAR <- lapply(retrieveOptRsquareAR(df_daily, ARtauListDaily), function(vec) vec[-removedIndices])
+RsquareWeeklyAR <- lapply(retrieveOptRsquareAR(df_weekly, ARtauListWeekly), function(vec) vec[-removedIndices])
+```
+
+#Point range plot: Figure 13
+```{r}
+ARpointRangeDF <- data.frame(
+                           colour = rep(c("AR only", "with upstream term"), each = 4),
+                           timeScale = factor(rep(c("15min", "hourly", "daily", "weekly"), 2), levels = c("15min", "hourly", "daily", "weekly")), 
+                           median = c(median(Rsquare15minAR[[1]]), median(RsquareHourlyAR[[1]]), median(RsquareDailyAR[[1]]), median(RsquareWeeklyAR[[1]]),median(Rsquare15minAR[[2]]), median(RsquareHourlyAR[[2]]), median(RsquareDailyAR[[2]]), median(RsquareWeeklyAR[[2]])),
+                           lower = c(quantile(Rsquare15minAR[[1]], 0.025), quantile(RsquareHourlyAR[[1]], 0.025), quantile(RsquareDailyAR[[1]], 0.025), quantile(RsquareWeeklyAR[[1]], 0.025), quantile(Rsquare15minAR[[2]], 0.025), quantile(RsquareHourlyAR[[2]], 0.025), quantile(RsquareDailyAR[[2]], 0.025), quantile(RsquareWeeklyAR[[2]], 0.025)),
+                           upper = c(quantile(Rsquare15minAR[[1]], 0.975), quantile(RsquareHourlyAR[[1]], 0.975), quantile(RsquareDailyAR[[1]], 0.975), quantile(RsquareWeeklyAR[[1]], 0.975), quantile(Rsquare15minAR[[2]], 0.975), quantile(RsquareHourlyAR[[2]], 0.975), quantile(RsquareDailyAR[[2]], 0.975), quantile(RsquareWeeklyAR[[2]], 0.975)))
+
+ggplot(ARpointRangeDF, aes(x = timeScale, y = median, color = colour)) +
+  theme_minimal() +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position = position_dodge(width = 1)) +
+  geom_text(aes(label = sprintf("%.4f", median)), position = position_dodge(width = 1), vjust = -2, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = lower, label = sprintf("%.4f", lower)), position = position_dodge(width = 1), vjust = 1, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = upper, label = sprintf("%.4f", upper)), position = position_dodge(width = 1), vjust = -0.4, hjust = 0.5, size = 3.4) +
+  xlab("timescale") +
+  ylab(bquote(bold("Adjusted" ~ R^2))) +
+  scale_color_manual(values = c("AR only" = "skyblue", "with upstream term" = "black"))+
+  labs(color = "models") +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+```
+
+#Fitted models example plots: Figure 14  and 15
+```{r}
+stationARplot <- function(id, dfAll, interval) {
+  dfAR <- dfAll %>% filter(station_id == as.character(id)) %>%
+                    mutate(heightAR = lag(height, 1)) %>%
+                    select(date, heightAR, height)
+  modelAR <- lm(height ~ 1 + heightAR, data = dfAR)
+  
+  dfAR <- dfAR[-1,]
+  observations <- dfAR$height
+  fitted <- modelAR$fitted.values
+  
+  dfPlot <- data.frame(time = dfAR$date[interval],
+                       Observations = observations[interval],
+                       Fitted = fitted[interval]
+                       )
+  
+  ggplot(dfPlot, aes(x = time)) +
+  geom_line(aes(y = Observations, color = "Observations"), size = 1) +
+  geom_line(aes(y = Fitted, color = "Fitted Values"), size = 1) +
+  labs(x = "time",
+       y = "River height (m)",
+       color = "Data type") +
+  theme_minimal() +
+      theme(axis.text.x = element_text(size = 10, face = "bold")) +
+      theme(axis.text.y = element_text(size = 10, face = "bold")) +
+      theme(panel.grid.minor= element_blank(),
+            axis.title.x = element_text(size = 14, face = "bold"), 
+            axis.title.y = element_text(size = 14, face = "bold"))
+}
+
+stationARplot(7064, df_15min, 100:180)
+stationARplot(7064, df_hourly, 100:180)
+stationARplot(7064, df_daily, 100:180)
+stationARplot(7064, df_weekly, 100:180)
+
+stationARplot(7034, df_15min, 100:180)
+stationARplot(7034, df_hourly, 100:180)
+stationARplot(7034, df_daily, 100:180)
+stationARplot(7034, df_weekly, 100:180)
+```
+
+
+
+4.3 ARMA/ARIMA/SARIMA models
+#Stationary test (ADF and KPSS)
+```{r}
+retrieveStationarityInfo <- function(dfALL) {
+  stationarityCheckdf <- data.frame(stations = riverStations,
+                                  ADF = numeric(33),
+                                  KPSS = numeric(33),
+                                  status = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    df <- dfALL %>% filter(station_id == riverStations[i])
+    stationarityCheckdf$ADF[i] <- adf.test(df$height)$p.value
+    stationarityCheckdf$KPSS[i] <- kpss.test(df$height)$p.value
+    
+    if (adf.test(df$height)$p.value < 0.05 & kpss.test(df$height)$p.value >0.05) {
+      stationarityCheckdf$status[i] <- 1
+    } else {
+      stationarityCheckdf$status[i] <- 0
+    }
+  }
+  
+  return(stationarityCheckdf)
+}
+
+dfStationarityDaily <- retrieveStationarityInfo(df_daily)
+dfStationarityweekly <- retrieveStationarityInfo(df_weekly)
+```
+
+#Fit ARMA/ARIMA models
+#Comparing AIC values for different models
+```{r}
+ARModelsAIC1 <- function(dfAll) {
+  statsDF <- data.frame(stations = riverStations,
+                              ARMA = numeric(33),
+                              ARIMA = numeric(33)
+                        )
+  
+  for (i in seq_along(riverStations)) {
+    dfModel <- dfAll %>% filter(station_id == riverStations[i]) 
+  
+    model1 <- auto.arima(dfModel$height, d = 0, seasonal = FALSE, stepwise = TRUE, ic = "aic")
+    model2 <- auto.arima(dfModel$height, seasonal = FALSE, stepwise = TRUE, ic = "aic")
+    
+    statsDF$ARMA[i] <- model1$aic
+    statsDF$ARIMA[i] <- model2$aic
+  }
+  
+  statsDF$diff <- statsDF$ARMA - statsDF$ARIMA
+  return(statsDF)
+}
+
+#for daily data
+dfCompareDaily <- ARModelsAIC1(df_daily)
+#for weekly data
+dfCompareWeekly <- ARModelsAIC1(df_weekly)
+```
+
+#Comparing MAE values for different models
+```{r}
+ARModelsMAE <- function(dfAll) {
+  statsDF <- data.frame(stations = riverStations,
+                              ARMA = numeric(33),
+                              ARIMA = numeric(33),
+                              AR1 = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfModel <- dfAll %>% filter(station_id == riverStations[i]) 
+  
+    model1 <- auto.arima(dfModel$height, d = 0, seasonal = FALSE, stepwise = TRUE, ic = "aic")
+    model2 <- auto.arima(dfModel$height, seasonal = FALSE, stepwise = TRUE, ic = "aic")
+    model3 <- auto.arima(dfModel$height, start.p = 1, start.q = 0, max.p = 1, max.q = 0)
+   
+    
+    statsDF$ARMA[i] <- accuracy(model1)[,"MAE"]
+    statsDF$ARIMA[i] <- accuracy(model2)[,"MAE"]
+    statsDF$AR1[i] <- accuracy(model3)[,"MAE"]
+  }
+  
+  return(statsDF)
+}
+
+#for daily data
+MAEdaily <- ARModelsMAE(df_daily)
+#for weekly data
+MAEweekly <- ARModelsMAE(df_weekly)
+```
+
+#point range plot for MAE: Figure 18
+```{r}
+MAERangeDF <- data.frame(
+                         colour = rep(c("ARMA", "ARIMA", "AR(1)"), each = 2),
+                         timescales = factor(c("daily","weekly"), levels = c("daily", "weekly")),
+                         median = c(median(MAEdaily$ARMA), median(MAEweekly$ARMA),
+                                    median(MAEdaily$ARIMA), median(MAEweekly$ARIMA),
+                                    median(MAEdaily$AR1), median(MAEweekly$AR1)), 
+                         lower = c(quantile(MAEdaily$ARMA, 0.025), quantile(MAEweekly$ARMA, 0.025),
+                                   quantile(MAEdaily$ARIMA, 0.025), quantile(MAEweekly$ARIMA, 0.025),
+                                   quantile(MAEdaily$AR1, 0.025), quantile(MAEweekly$AR1, 0.025)),
+                         upper = c(quantile(MAEdaily$ARMA, 0.975), quantile(MAEweekly$ARMA, 0.975),
+                                   quantile(MAEdaily$ARIMA, 0.975), quantile(MAEweekly$ARIMA, 0.975),
+                                   quantile(MAEdaily$AR1, 0.975), quantile(MAEweekly$AR1, 0.975))
+                         )
+
+
+ggplot(MAERangeDF, aes(x = timescales, y = median, color = colour)) +
+  theme_minimal() +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position = position_dodge(width = 1)) +
+  geom_text(aes(label = sprintf("%.4f", median)), position = position_dodge(width = 1), vjust = -2, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = lower, label = sprintf("%.4f", lower)), position = position_dodge(width = 1), vjust = 1, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = upper, label = sprintf("%.4f", upper)), position = position_dodge(width = 1), vjust = -0.4, hjust = 0.5, size = 3.4) +
+  xlab("timescale") +
+  ylab("MAE (m)") +
+  scale_color_manual(values = c("ARMA" = "skyblue", "ARIMA" = "black","AR(1)" = "red"))+
+  labs(color = "models") +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+```
+
+
+
+4.4 State-space models (LL, LLT, LLT with trends)
+#AIC values for models of LL, LLT 
+```{r}
+getAIC <- function(model) {
+  return(2*length(model$coef) - 2*model$loglik)
+}
+
+SSMAIC <- function(dfAll) {
+  statsDF <- data.frame(stations = riverStations,
+                              LL = numeric(33),
+                              LLT = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfModel <- dfAll %>% filter(station_id == riverStations[i]) 
+  
+    model1 <- StructTS(dfModel$height, type = "level")
+    model2 <- StructTS(dfModel$height, type = "trend")
+    
+    statsDF$LL[i] <- getAIC(model1)
+    statsDF$LLT[i] <- getAIC(model2)
+  }
+  
+  statsDF$diff <- statsDF$LL - statsDF$LLT
+  return(statsDF)
+}
+
+#for daily data
+SSMAIC(df_daily)
+#for weekly data
+SSMAIC(df_weekly)
+```
+
+#MAE values for models of LL, LLT
+```{r}
+getMAE <- function(dfSSM, model) {
+  fitValue <- as.numeric(fitted(model)[,"level"])
+  return(mean(abs(dfSSM$height - fitValue)))
+}
+
+SSMMAE <- function(dfAll) {
+  statsDF <- data.frame(stations = riverStations,
+                              LL = numeric(33),
+                              LLT = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfModel <- dfAll %>% filter(station_id == riverStations[i]) 
+  
+    model1 <- StructTS(dfModel$height, type = "level")
+    model2 <- StructTS(dfModel$height, type = "trend")
+    
+    statsDF$LL[i] <- getMAE(dfModel, model1)
+    statsDF$LLT[i] <- getMAE(dfModel, model2)
+  }
+  
+  return(statsDF)
+}
+
+#for daily data
+SSMMAE(df_daily)
+#for weekly data
+SSMMAE(df_weekly)
+```
+
+#Getting estimated parameters for LL and LLT
+```{r}
+#for LL models (level, epsilon)
+LLParameterFunction <- function(dfAll) {
+  LLpara <- data.frame(stations = riverStations,
+                        level = numeric(33),
+                        epsilon = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfLL <- dfAll %>% filter(station_id == riverStations[i])
+    LLts <- ts(dfLL$height, start = 1, frequency = 1)
+    LLModel <- StructTS(LLts, type = "level")
+    
+    LLpara$level[i] <- as.numeric(LLModel$coef[1])
+    LLpara$epsilon[i] <- as.numeric(LLModel$coef[2])
+  }
+  
+  return(LLpara)
+}
+
+#for LLT models (level, slope, epsilon)
+LLTParameterFunction <- function(dfAll) {
+  LLTpara <- data.frame(stations = riverStations,
+                        level = numeric(33),
+                        slope = numeric(33),
+                        epsilon = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfLLT <- dfAll %>% filter(station_id == riverStations[i])
+    LLTts <- ts(dfLLT$height, start = 1, frequency = 1)
+    LLTModel <- StructTS(LLTts, type = "trend")
+    
+    LLTpara$level[i] <- as.numeric(LLTModel$coef[1])
+    LLTpara$slope[i] <- as.numeric(LLTModel$coef[2])
+    LLTpara$epsilon[i] <- as.numeric(LLTModel$coef[3])
+  }
+  
+  return(LLTpara)
+}
+
+#for daily data
+LLParameterFunction(df_daily)
+LLTParameterFunction(df_daily)
+#for weekly data
+LLParameterFunction(df_weekly)
+LLTParameterFunction(df_weekly)
+```
+
+
+#time series cross validation MAE for LL, LLT and AR(1)
+```{r}
+LLCrossValidation <- function(dfAll) {
+  crossValidationDF <- data.frame(stations = riverStations,
+                                  MAELL = numeric(33),
+                                  MAELLT = numeric(33),
+                                  MAEAR = numeric(33))
+  
+  for (i in seq_along(riverStations)) {
+    dfLL <- dfAll %>% filter(station_id == riverStations[i])
+    LLts <- ts(dfLL$height, start = 1, frequency = 1)
+    
+    LLForecast <- function(y, h) {
+      fit <- StructTS(y, type = "level")
+      fc <- forecast(fit, h = h)
+      return(fc)
+    }
+    
+    LLTForecast <- function(y, h) {
+      fit <- StructTS(y, type = "trend")
+      fc <- forecast(fit, h = h)
+      return(fc)
+    }
+    
+    ARForecast <- function(y, h) {
+      fit <- arima(y, order = c(1,0,0))
+      fc <- forecast(fit, h = h)
+      return(fc)
+    }
+    
+    errorCVLL <- as.numeric(tsCV(LLts, LLForecast, h = 1))
+    errorCVLLT <- as.numeric(tsCV(LLts, LLTForecast, h = 1)) 
+    errorCVAR <- as.numeric(tsCV(LLts, ARForecast, h = 1))
+    
+    crossValidationDF$MAELL[i] = mean(abs(errorCVLL), na.rm = TRUE)
+    crossValidationDF$MAELLT[i] = mean(abs(errorCVLLT), na.rm = TRUE)
+    crossValidationDF$MAEAR[i] = mean(abs(errorCVAR), na.rm = TRUE)
+  }
+  
+  return(crossValidationDF)
+}
+
+#for daily data
+LLCV <- LLCrossValidation(df_daily)
+LLCV$min <- apply(LLCV[, c("MAELL", "MAELLT", "MAEAR")], 1, function(x) {
+  which.min(x)  
+})
+
+#for weekly data
+LLCV2 <- LLCrossValidation(df_weekly)
+LLCV2$min <- apply(LLCV2[, c("MAELL", "MAELLT", "MAEAR")], 1, function(x) {
+  which.min(x)  
+})
+```
+
+#Point range plot for cross validation MAE
+```{r}
+CVMAERangeDF <- data.frame(
+                         colour = rep(c("LL", "LLT", "AR(1)"), each = 2),
+                         timescales = factor(c("daily","weekly"), levels = c("daily", "weekly")),
+                         median = c(median(LLCV$MAELL), median(LLCV2$MAELL),
+                                    median(LLCV$MAELLT), median(LLCV2$MAELLT),
+                                    median(LLCV$MAEAR), median(LLCV2$MAEAR)), 
+                         lower = c(quantile(LLCV$MAELL, 0.025), quantile(LLCV2$MAELL, 0.025),
+                                   quantile(LLCV$MAELLT, 0.025), quantile(LLCV2$MAELLT, 0.025),
+                                   quantile(LLCV$MAEAR, 0.025), quantile(LLCV2$MAEAR, 0.025)),
+                         upper = c(quantile(LLCV$MAELL, 0.975), quantile(LLCV2$MAELL, 0.975),
+                                   quantile(LLCV$MAELLT, 0.975), quantile(LLCV2$MAELLT, 0.975),
+                                   quantile(LLCV$MAEAR, 0.975), quantile(LLCV2$MAEAR, 0.975))
+                         )
+
+
+ggplot(CVMAERangeDF, aes(x = timescales, y = median, color = colour)) +
+  theme_minimal() +
+  geom_pointrange(aes(ymin = lower, ymax = upper), position = position_dodge(width = 1)) +
+  geom_text(aes(label = sprintf("%.4f", median)), position = position_dodge(width = 1), vjust = -2, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = lower, label = sprintf("%.4f", lower)), position = position_dodge(width = 1), vjust = 1, hjust = 0.5, size = 3.4) +
+  geom_text(aes(y = upper, label = sprintf("%.4f", upper)), position = position_dodge(width = 1), vjust = -0.4, hjust = 0.5, size = 3.4) +
+  xlab("timescale") +
+  ylab("Cross validation MAE (m)") +
+  scale_color_manual(values = c("LL" = "skyblue","LLT" = "black","AR(1)" = "red"))+
+  labs(color = "models") +
+  theme(axis.text.x = element_text(size = 10, face = "bold")) +
+  theme(axis.text.y = element_text(size = 10, face = "bold")) +
+  theme(panel.grid.minor= element_blank(),
+        axis.title.x = element_text(size = 12, face = "bold"), 
+        axis.title.y = element_text(size = 12, face = "bold"))
+```
+
+
